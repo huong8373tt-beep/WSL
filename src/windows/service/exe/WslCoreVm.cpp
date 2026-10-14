@@ -1574,15 +1574,23 @@ std::wstring WslCoreVm::GenerateConfigJson()
         vmSettings.ComputeTopology.Memory.HostingProcessNameSuffix = wsl::windows::common::wslutil::c_vmOwner;
     }
 
-    // If nested virtualization was requested, ensure the platform supports it.
-    //
-    // N.B. This is done because arm64 and some older amd64 processors do not support nested virtualization.
-    //      Nested virtualization not supported on Windows 10.
+    // Configure nested virtualization if it was explicitly requested.
     if (m_vmConfig.EnableNestedVirtualization)
     {
         try
         {
-            m_vmConfig.EnableNestedVirtualization = wsl::windows::common::hcs::IsNestedVirtualizationSupported();
+            if (wsl::windows::common::helpers::IsWindows11OrAbove())
+            {
+                m_vmConfig.EnableNestedVirtualization = wsl::windows::common::hcs::IsNestedVirtualizationSupported();
+            }
+            else if constexpr (wsl::shared::Arm64)
+            {
+                // Preserve the existing Windows 10 ARM64 behavior.
+                m_vmConfig.EnableNestedVirtualization = false;
+            }
+            // HCS does not expose processor capabilities on Windows 10. Preserve the user's explicit
+            // x64 opt-in there and let HCS validate whether the host can create the requested partition.
+
             vmSettings.ComputeTopology.Processor.ExposeVirtualizationExtensions = m_vmConfig.EnableNestedVirtualization;
             if (!m_vmConfig.EnableNestedVirtualization)
             {
@@ -1594,8 +1602,12 @@ std::wstring WslCoreVm::GenerateConfigJson()
 
 #ifdef _AMD64_
 
+    // Windows 10 Hyper-V rejects a partition that requests both nested virtualization and child perfmon support.
+    const bool disablePerfmonForNestedVirtualization =
+        m_vmConfig.EnableNestedVirtualization && !wsl::windows::common::helpers::IsWindows11OrAbove();
+
     // Enable hardware performance counters if they are supported.
-    if (m_vmConfig.EnableHardwarePerformanceCounters)
+    if (m_vmConfig.EnableHardwarePerformanceCounters && !disablePerfmonForNestedVirtualization)
     {
         HV_X64_HYPERVISOR_HARDWARE_FEATURES hardwareFeatures{};
         __cpuid(reinterpret_cast<int*>(&hardwareFeatures), HvCpuIdFunctionMsHvHardwareFeatures);
